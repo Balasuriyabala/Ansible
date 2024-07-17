@@ -1,0 +1,105 @@
+---
+- name: Provision an EC2 instance and deploy a web server
+  hosts: localhost
+  connection: local
+  gather_facts: False
+  vars:
+    instance_type: t2.micro
+    key_name: your_key_pair_name
+    region: region
+    image: ami-0c55b159cbfafe1f0  # Amazon Linux 2 AMI
+    security_group: webserver-sg
+    vpc_subnet_id: your_subnet_id
+
+  tasks:
+    - name: Create a security group
+      amazon.aws.ec2_group:
+        name: "{{ security_group }}"
+        description: Security group for web server
+        region: "{{ region }}"
+        rules:
+          - proto: tcp
+            ports:
+              - 22
+            cidr_ip: 0.0.0.0/0
+          - proto: tcp
+            ports:
+              - 80
+            cidr_ip: 0.0.0.0/0
+        rules_egress:
+          - proto: all
+            cidr_ip: 0.0.0.0/0
+      register: sg
+
+    - name: Launch EC2 instance
+      amazon.aws.ec2_instance:
+        name: webserver
+        key_name: "{{ key_name }}"
+        region: "{{ region }}"
+        instance_type: "{{ instance_type }}"
+        image_id: "{{ image }}"
+        vpc_subnet_id: "{{ vpc_subnet_id }}"
+        security_group: "{{ sg.group_id }}"
+        wait: yes
+      register: ec2
+
+    - name: Debug instance details
+      debug:
+        var: ec2.instances
+
+    - name: Add new instance to host group
+      add_host:
+        hostname: "{{ item.public_ip_address }}"
+        groupname: launched
+      with_items: "{{ ec2.instances }}"
+
+    - name: Wait for SSH to come up
+      wait_for:
+        host: "{{ item.public_ip_address }}"
+        port: 22
+        delay: 60
+        timeout: 320
+        state: started
+      with_items: "{{ ec2.instances }}"
+
+- name: Configure the web server
+  hosts: launched
+  become: yes
+  tasks:
+    - name: Update apt package index
+      ansible.builtin.apt:
+        update_cache: yes
+
+    - name: Install Apache
+      ansible.builtin.apt:
+        name: apache2
+        state: present
+      register: install_result
+
+    - name: Debug Apache install result
+      debug:
+        var: install_result
+
+    - name: Start Apache service
+      ansible.builtin.service:
+        name: apache2
+        state: started
+        enabled: yes
+      register: service_result
+
+    - name: Debug Apache service result
+      debug:
+        var: service_result
+
+    - name: Create a simple web page
+      ansible.builtin.copy:
+        content: |
+          <html>
+            <head>
+              <title>Welcome to your web server!</title>
+            </head>
+            <body>
+              <h1>Success! Your web server is running!</h1>
+            </body>
+          </html>
+        dest: /var/www/html/index.html
